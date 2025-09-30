@@ -31,7 +31,7 @@ algorithm.
 
 ## Features
 
-- **Compatibility**: Supports multiple PostgreSQL versions (13 to 17).
+- **Compatibility**: Supports multiple PostgreSQL versions (13 to 18).
 - **Elliptic Curves**: Supports `secp256r1` and `secp256k1` curves.
 - **Hash Functions**: Supports SHA-256 for hashing input data.
 - **Performance**: Written in Rust for better safety and performance.
