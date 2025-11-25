@@ -1,0 +1,164 @@
+name: Build Extension Packages
+
+on:
+  push:
+    branches: [main, master]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: "false"
+
+jobs:
+  build:
+    name: Build pg${{ matrix.pg_version }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        pg_version: [17, 18]
+        os: [ubuntu-22.04]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up prerequisites
+        run: |
+          sudo apt-get update -y -qq --fix-missing
+
+          echo "----- Remove old postgres -----"
+          sudo apt remove -y '^postgres.*' '^libpq.*' '^clang.*' '^llvm.*' '^libclang.*' '^libllvm.*' '^mono-llvm.*' || true
+
+          echo "----- Install system dependencies -----"
+          sudo apt-get install -y \
+            build-essential \
+            llvm-14-dev libclang-14-dev clang-14 \
+            gcc \
+            libssl-dev \
+            libz-dev \
+            make \
+            pkg-config \
+            zlib1g-dev \
+            wget \
+            gnupg
+
+      - name: Setup PostgreSQL apt repository
+        run: |
+          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+          sudo apt-get update -y -qq --fix-missing
+
+      - name: Install PostgreSQL ${{ matrix.pg_version }}
+        run: |
+          sudo apt-get install -y \
+            postgresql-${{ matrix.pg_version }} \
+            postgresql-server-dev-${{ matrix.pg_version }}
+
+      - name: Set up PostgreSQL permissions
+        run: |
+          sudo chmod a+rwx `/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config --pkglibdir` \
+            `/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config --sharedir`/extension \
+            /var/run/postgresql/
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-pg${{ matrix.pg_version }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-pg${{ matrix.pg_version }}-
+            cargo-${{ runner.os }}-
+
+      - name: Install cargo-pgrx
+        run: cargo install cargo-pgrx --locked
+
+      - name: Initialize pgrx
+        run: cargo pgrx init --pg${{ matrix.pg_version }} /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+
+      - name: Build extension package
+        run: cargo pgrx package --features "pg${{ matrix.pg_version }}" --no-default-features --pg-config /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p artifact/lib artifact/extension
+          PKG_DIR="target/release/pg_ecdsa_verify-pg${{ matrix.pg_version }}"
+
+          # Debug: show full package structure
+          echo "Full package structure:"
+          find "$PKG_DIR" -type f -ls
+
+          # Copy .so file (search recursively)
+          find "$PKG_DIR" -name "*.so" -type f -exec cp -v {} artifact/lib/ \;
+
+          # Copy control and SQL files (search recursively)
+          find "$PKG_DIR" -name "*.control" -type f -exec cp -v {} artifact/extension/ \;
+          find "$PKG_DIR" -name "*.sql" -type f -exec cp -v {} artifact/extension/ \;
+
+          # List what we have
+          echo "Artifact contents:"
+          find artifact -type f -ls
+
+          # Verify we have files
+          if [ -z "$(ls -A artifact/lib 2>/dev/null)" ]; then
+            echo "ERROR: No .so files found!"
+            echo ""
+            echo "=== DEBUG INFO ==="
+            echo "PKG_DIR: $PKG_DIR"
+            echo ""
+            echo "Contents of target/release/:"
+            ls -la target/release/ || true
+            echo ""
+            echo "All directories matching pg_ecdsa_verify*:"
+            find target -type d -name "pg_ecdsa_verify*" -ls 2>/dev/null || true
+            echo ""
+            echo "All .so files in target/:"
+            find target -name "*.so" -type f -ls 2>/dev/null || true
+            echo ""
+            echo "All .control files in target/:"
+            find target -name "*.control" -type f -ls 2>/dev/null || true
+            echo ""
+            echo "Full target/release tree:"
+            find target/release -type f -ls 2>/dev/null | head -50 || true
+            echo "=== END DEBUG INFO ==="
+            exit 1
+          fi
+          if [ -z "$(ls -A artifact/extension 2>/dev/null)" ]; then
+            echo "ERROR: No extension files found!"
+            echo ""
+            echo "=== DEBUG INFO ==="
+            echo "All .sql and .control files:"
+            find target -name "*.sql" -o -name "*.control" -type f -ls 2>/dev/null || true
+            echo "=== END DEBUG INFO ==="
+            exit 1
+          fi
+
+          # Create tarball
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          ARCH=$(uname -m)
+          tar -czvf pg_ecdsa_verify-${VERSION}-pg${{ matrix.pg_version }}-linux-${ARCH}.tar.gz -C artifact .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pg_ecdsa_verify-${{ github.ref_name || 'dev' }}-pg${{ matrix.pg_version }}-linux-x86_64
+          path: pg_ecdsa_verify-*.tar.gz
+          if-no-files-found: error
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        if: github.ref_type == 'tag'
+        with:
+          files: pg_ecdsa_verify-*.tar.gz
