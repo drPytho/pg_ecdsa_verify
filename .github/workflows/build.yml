@@ -82,8 +82,23 @@ jobs:
             cargo-${{ runner.os }}-pg${{ matrix.pg_version }}-
             cargo-${{ runner.os }}-
 
+      - name: Restore cargo-pgrx cache
+        id: cache-pgrx
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cargo/bin/cargo-pgrx
+          key: cargo-pgrx-${{ runner.os }}-0.16.1
+
       - name: Install cargo-pgrx
-        run: cargo install cargo-pgrx --locked
+        if: steps.cache-pgrx.outputs.cache-hit != 'true'
+        run: cargo install cargo-pgrx --version 0.16.1 --locked
+
+      - name: Save cargo-pgrx cache
+        if: steps.cache-pgrx.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cargo/bin/cargo-pgrx
+          key: cargo-pgrx-${{ runner.os }}-0.16.1
 
       - name: Initialize pgrx
         run: cargo pgrx init --pg${{ matrix.pg_version }} /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
@@ -114,34 +129,10 @@ jobs:
           # Verify we have files
           if [ -z "$(ls -A artifact/lib 2>/dev/null)" ]; then
             echo "ERROR: No .so files found!"
-            echo ""
-            echo "=== DEBUG INFO ==="
-            echo "PKG_DIR: $PKG_DIR"
-            echo ""
-            echo "Contents of target/release/:"
-            ls -la target/release/ || true
-            echo ""
-            echo "All directories matching pg_ecdsa_verify*:"
-            find target -type d -name "pg_ecdsa_verify*" -ls 2>/dev/null || true
-            echo ""
-            echo "All .so files in target/:"
-            find target -name "*.so" -type f -ls 2>/dev/null || true
-            echo ""
-            echo "All .control files in target/:"
-            find target -name "*.control" -type f -ls 2>/dev/null || true
-            echo ""
-            echo "Full target/release tree:"
-            find target/release -type f -ls 2>/dev/null | head -50 || true
-            echo "=== END DEBUG INFO ==="
             exit 1
           fi
           if [ -z "$(ls -A artifact/extension 2>/dev/null)" ]; then
             echo "ERROR: No extension files found!"
-            echo ""
-            echo "=== DEBUG INFO ==="
-            echo "All .sql and .control files:"
-            find target -name "*.sql" -o -name "*.control" -type f -ls 2>/dev/null || true
-            echo "=== END DEBUG INFO ==="
             exit 1
           fi
 
@@ -153,7 +144,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pg_ecdsa_verify-${{ github.ref_name || 'dev' }}-pg${{ matrix.pg_version }}-linux-x86_64
+          name: pg_ecdsa_verify-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) || github.ref_name || 'dev' }}-pg${{ matrix.pg_version }}-linux-x86_64
           path: pg_ecdsa_verify-*.tar.gz
           if-no-files-found: error
 
