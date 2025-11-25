@@ -153,3 +153,4 @@ jobs:
         if: github.ref_type == 'tag'
         with:
           files: pg_ecdsa_verify-*.tar.gz
+          token: ${{ secrets.RELEASE_TOKEN }}
